@@ -1,0 +1,44 @@
+{
+  "manifest_version": 3,
+  "name": "豆包会话打印",
+  "version": "1.0.0",
+  "description": "让豆包分享的会话页面正常多页打印、导出 PDF / EPUB 电子书。修复页面被滚动容器裁掉导致只能打印一页的问题。",
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_title": "打印当前豆包会话（Ctrl+P 也可）",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "background": {
+    "service_worker": "src/background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.doubao.com/thread/*",
+        "https://doubao.com/thread/*"
+      ],
+      "js": ["src/epub.js", "src/content.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "commands": {
+    "print-thread": {
+      "suggested_key": {
+        "default": "Alt+Shift+P"
+      },
+      "description": "打印当前豆包会话全文"
+    }
+  },
+  "permissions": ["storage"]
+}
