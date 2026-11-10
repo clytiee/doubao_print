@@ -226,10 +226,12 @@ a { color: #3f5fe0; text-decoration: none; }
 .cover { text-align: center; padding-top: 18%; }
 .cover h1 { font-size: 1.9em; margin-bottom: .8em; }
 .cover .meta { font-size: .85em; color: #64748b; line-height: 2; }
+body.page-cover { margin: 0; padding: 0; background: #fff; }
+body.page-cover img { display: block; width: 100%; height: auto; margin: 0 auto; }
 .chapter-title { font-size: 1.3em; margin: 0 0 1.2em; }
 .front-title { font-size: 1.6em; line-height: 1.45; margin: 0 0 1.2em; }`;
 
-  function xhtmlDoc(title, body) {
+  function xhtmlDoc(title, body, bodyClass) {
     return `<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml" xml:lang="zh-CN" lang="zh-CN">
@@ -238,7 +240,7 @@ a { color: #3f5fe0; text-decoration: none; }
 <title>${escText(title)}</title>
 <link rel="stylesheet" type="text/css" href="style.css"/>
 </head>
-<body>
+<body${bodyClass ? ` class="${bodyClass}"` : ''}>
 ${body}
 </body>
 </html>`;
@@ -287,6 +289,105 @@ ${body}
     }
   }
 
+  /**
+   * 生成封面图：部分阅读器（如阅星瞳）只认 OPF 里声明为 cover-image 的位图，
+   * 纯文字封面页会报「不支持的封面图片」。
+   *
+   * 尺寸按小屏电纸书来：480×800 竖版（阅星瞳 X4 这类 4.3 寸机器是 800×480 屏，
+   * 主控内存有限，过大的 JPEG 解码会失败）。先按 1000×1400 超采样绘制再降采样，
+   * 保证小图也清晰。
+   */
+  const COVER_W = 480;
+  const COVER_H = 800;
+
+  async function makeCoverImage(title, dateStr) {
+    try {
+      const W = 1000;
+      const H = 1400;
+      const canvas = document.createElement('canvas');
+      canvas.width = W;
+      canvas.height = H;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return null;
+
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, W, H);
+      ctx.fillStyle = '#4e6ef2';
+      ctx.fillRect(0, 0, W, 14);
+
+      const sans = (size, weight) =>
+        `${weight || 600} ${size}px "PingFang SC","Microsoft YaHei","Noto Sans CJK SC","Source Han Sans SC",sans-serif`;
+      const serif = (size, weight) =>
+        `${weight || 400} ${size}px "Songti SC","Noto Serif CJK SC","Source Han Serif SC",serif`;
+
+      // 标题按宽折行，最多 6 行
+      ctx.font = sans(66, 700);
+      const maxW = W - 180;
+      const lines = [];
+      let line = '';
+      let truncated = false;
+      for (const ch of title) {
+        const test = line + ch;
+        if (ctx.measureText(test).width > maxW && line) {
+          if (lines.length === 5) {
+            truncated = true;
+            break;
+          }
+          lines.push(line);
+          line = ch;
+        } else {
+          line = test;
+        }
+      }
+      if (line) lines.push(line);
+
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'top';
+      ctx.fillStyle = '#111827';
+      const startY = 320;
+      const lineH = 96;
+      lines.forEach((t, i) => {
+        const text = i === lines.length - 1 && truncated ? `${t.slice(0, -1)}…` : t;
+        ctx.fillText(text, 90, startY + i * lineH);
+      });
+
+      const baseY = startY + lines.length * lineH + 46;
+      ctx.strokeStyle = '#e5e7eb';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(90, baseY);
+      ctx.lineTo(W - 90, baseY);
+      ctx.stroke();
+
+      ctx.font = serif(42);
+      ctx.fillStyle = '#4e6ef2';
+      ctx.fillText('豆包对话导出', 90, baseY + 70);
+      ctx.font = serif(34);
+      ctx.fillStyle = '#6b7280';
+      ctx.fillText(dateStr, 90, baseY + 140);
+      ctx.font = serif(26);
+      ctx.fillStyle = '#9aa3af';
+      ctx.fillText('内容由 AI 生成，请注意核实', 90, H - 120);
+
+      const out = document.createElement('canvas');
+      out.width = COVER_W;
+      out.height = COVER_H;
+      const octx = out.getContext('2d');
+      if (!octx) return null;
+      octx.fillStyle = '#ffffff';
+      octx.fillRect(0, 0, COVER_W, COVER_H);
+      octx.imageSmoothingEnabled = true;
+      octx.imageSmoothingQuality = 'high';
+      octx.drawImage(canvas, 0, 0, W, H, 0, 0, COVER_W, COVER_H);
+
+      const blob = await new Promise((res) => out.toBlob(res, 'image/jpeg', 0.9));
+      if (!blob) return null;
+      return { data: new Uint8Array(await blob.arrayBuffer()), ext: 'jpg' };
+    } catch (e) {
+      return null;
+    }
+  }
+
   async function buildEpub(msgs, images, bookTitle) {
     const chapters = groupChapters(msgs);
 
@@ -323,7 +424,18 @@ ${body}
       return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
     });
 
-    // 封面 / 前言
+    // 封面（位图，供阅读器读取缩略图/封面）+ 书名页
+    const cover = await makeCoverImage(title, dateStr);
+    const coverPage = cover
+      ? xhtmlDoc(
+          '封面',
+          `<section epub:type="cover" xmlns:epub="http://www.idpf.org/2007/ops">
+<img src="images/cover.jpg" alt="${escAttr(title)}"/>
+</section>`,
+          'page-cover'
+        )
+      : null;
+
     const front = xhtmlDoc(title, `<section class="cover">
 <h1>${escText(title)}</h1>
 <div class="meta">
@@ -356,7 +468,8 @@ ${body}
     const nav = xhtmlDoc('目录', `<nav epub:type="toc" xmlns:epub="http://www.idpf.org/2007/ops">
 <h1>目录</h1>
 <ul>
-<li><a href="front.xhtml">封面</a></li>
+${cover ? '<li><a href="cover.xhtml">封面</a></li>' : ''}
+<li><a href="front.xhtml">书名页</a></li>
 ${navLis}
 </ul>
 </nav>`);
@@ -379,8 +492,12 @@ ${navLis}
 </head>
 <docTitle><text>${escText(title)}</text></docTitle>
 <navMap>
-    <navPoint id="np0" playOrder="0">
+${cover ? `    <navPoint id="np0" playOrder="0">
       <navLabel><text>封面</text></navLabel>
+      <content src="cover.xhtml"/>
+    </navPoint>
+` : ''}    <navPoint id="npf" playOrder="1">
+      <navLabel><text>书名页</text></navLabel>
       <content src="front.xhtml"/>
     </navPoint>
 ${ncxPoints}
@@ -391,6 +508,10 @@ ${ncxPoints}
       '    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>',
       '    <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>',
       '    <item id="css" href="style.css" media-type="text/css"/>',
+      cover
+        ? '    <item id="cover-img" href="images/cover.jpg" media-type="image/jpeg" properties="cover-image"/>'
+        : '',
+      cover ? '    <item id="cover" href="cover.xhtml" media-type="application/xhtml+xml"/>' : '',
       '    <item id="front" href="front.xhtml" media-type="application/xhtml+xml"/>',
       ...chapFiles.map((c, i) => `    <item id="chap${i + 1}" href="${c.path}" media-type="application/xhtml+xml"/>`),
       ...imgFiles.map((f, i) => {
@@ -401,12 +522,13 @@ ${ncxPoints}
           : 'image/png';
         return `    <item id="img${i + 1}" href="${f.path}" media-type="${type}"/>`;
       }),
-    ].join('\n');
+    ].filter(Boolean).join('\n');
 
     const spineItems = [
+      cover ? '    <itemref idref="cover"/>' : '',
       '    <itemref idref="front"/>',
       ...chapFiles.map((c, i) => `    <itemref idref="chap${i + 1}"/>`),
-    ].join('\n');
+    ].filter(Boolean).join('\n');
 
     const opf = `<?xml version="1.0" encoding="utf-8"?>
 <package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid" xml:lang="zh-CN">
@@ -417,6 +539,7 @@ ${ncxPoints}
     <dc:language>zh-CN</dc:language>
     <dc:source>${escText(location.href)}</dc:source>
     <dc:date>${isoNow}</dc:date>
+    ${cover ? '<meta name="cover" content="cover-img"/>' : ''}
     <meta property="dcterms:modified">${isoNow}</meta>
   </metadata>
   <manifest>
@@ -440,6 +563,10 @@ ${spineItems}
       { path: 'OEBPS/nav.xhtml', text: nav },
       { path: 'OEBPS/toc.ncx', text: tocNcx },
       { path: 'OEBPS/style.css', text: CSS },
+      ...(cover ? [
+        { path: 'OEBPS/cover.xhtml', text: coverPage },
+        { path: 'OEBPS/images/cover.jpg', data: cover.data },
+      ] : []),
       { path: 'OEBPS/front.xhtml', text: front },
       ...chapFiles.map((c) => ({ path: `OEBPS/${c.path}`, text: c.html })),
       ...imgFiles.map((f) => ({ path: `OEBPS/${f.path}`, data: f.data })),
